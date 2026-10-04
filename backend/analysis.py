@@ -4,10 +4,6 @@ Analyses statistiques et modèles de machine learning.
 import pandas as pd
 import numpy as np
 from scipy import stats
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
 from backend.models import train_simple_regression, train_multiple_regression, train_logistic_regression
 
 def get_descriptive_stats(df):
@@ -18,26 +14,34 @@ def get_descriptive_stats(df):
     stats_dict = {}
     for col in existing_cols:
         data = df[col].dropna()
+        if len(data) == 0:
+            continue
         q1, q2, q3 = np.percentile(data, [25, 50, 75])
+        mean_val = float(np.mean(data))
+        std_val = float(np.std(data))
+        
         stats_dict[col] = {
-            'moyenne': float(np.mean(data)),
+            'moyenne': mean_val,
             'mediane': float(np.median(data)),
             'min': float(np.min(data)),
             'max': float(np.max(data)),
             'variance': float(np.var(data)),
-            'ecart_type': float(np.std(data)),
+            'ecart_type': std_val,
             'q1': float(q1),
             'q2': float(q2),
             'q3': float(q3),
-            'cv': float(np.std(data) / np.mean(data)) if np.mean(data) != 0 else 0
+            'cv': float(std_val / mean_val) if mean_val != 0 else 0
         }
     
     # Interprétation automatique
-    interpretations = [
-        f"Le revenu moyen des clients est de {stats_dict.get('Revenu_Mensuel', {}).get('moyenne', 0):,.0f} FCFA.",
-        f"Le montant moyen des crédits est de {stats_dict.get('Montant_Credit', {}).get('moyenne', 0):,.0f} FCFA.",
-        f"La variable avec la plus forte dispersion (CV) est : {max(stats_dict, key=lambda k: stats_dict[k]['cv']) if stats_dict else 'N/A'}."
-    ]
+    interpretations = []
+    if 'Revenu_Mensuel' in stats_dict:
+        interpretations.append(f"Le revenu moyen des clients est de {stats_dict['Revenu_Mensuel']['moyenne']:,.0f} FCFA.")
+    if 'Montant_Credit' in stats_dict:
+        interpretations.append(f"Le montant moyen des crédits est de {stats_dict['Montant_Credit']['moyenne']:,.0f} FCFA.")
+    if stats_dict:
+        max_cv_col = max(stats_dict, key=lambda k: stats_dict[k]['cv'])
+        interpretations.append(f"La variable avec la plus forte dispersion (CV) est : {max_cv_col}.")
     
     # Détection des valeurs aberrantes (IQR) pour Revenu_Mensuel
     outliers = 0
@@ -63,11 +67,13 @@ def get_gaussian_analysis(df):
     data = df['Revenu_Mensuel'].dropna()
     mu = float(np.mean(data))
     sigma = float(np.std(data))
+    if sigma == 0:
+        sigma = 1.0
     
     # Probabilités
-    p_low = stats.norm.cdf(300000, mu, sigma)
-    p_mid = stats.norm.cdf(800000, mu, sigma) - stats.norm.cdf(300000, mu, sigma)
-    p_high = 1 - stats.norm.cdf(1000000, mu, sigma)
+    p_low = float(stats.norm.cdf(300000, mu, sigma))
+    p_mid = float(stats.norm.cdf(800000, mu, sigma) - stats.norm.cdf(300000, mu, sigma))
+    p_high = float(1 - stats.norm.cdf(1000000, mu, sigma))
     
     # Données pour l'histogramme et la courbe
     counts, bins = np.histogram(data, bins=30, density=True)
@@ -78,9 +84,9 @@ def get_gaussian_analysis(df):
         'mu': mu,
         'sigma': sigma,
         'probabilities': {
-            'P_X_inf_300k': float(p_low),
-            'P_300k_X_800k': float(p_mid),
-            'P_X_sup_1M': float(p_high)
+            'P_X_inf_300k': p_low,
+            'P_300k_X_800k': p_mid,
+            'P_X_sup_1M': p_high
         },
         'histogram': {'counts': counts.tolist(), 'bins': bins.tolist()},
         'curve': {'x': x_curve.tolist(), 'y': y_curve.tolist()},
@@ -100,9 +106,9 @@ def get_poisson_analysis(df):
     lambda_val = float(np.mean(data))
     
     # Probabilités théoriques
-    p0 = stats.poisson.pmf(0, lambda_val)
-    p1 = stats.poisson.pmf(1, lambda_val)
-    p2 = stats.poisson.pmf(2, lambda_val)
+    p0 = float(stats.poisson.pmf(0, lambda_val))
+    p1 = float(stats.poisson.pmf(1, lambda_val))
+    p2 = float(stats.poisson.pmf(2, lambda_val))
     
     # Comparaison réel vs théorique
     max_val = int(min(data.max(), 10))
@@ -112,7 +118,7 @@ def get_poisson_analysis(df):
     
     return {
         'lambda': lambda_val,
-        'probabilities': {'P_X_0': float(p0), 'P_X_1': float(p1), 'P_X_2': float(p2)},
+        'probabilities': {'P_X_0': p0, 'P_X_1': p1, 'P_X_2': p2},
         'comparison': {
             'x': x_vals,
             'reel': real_probs,
@@ -143,8 +149,20 @@ def get_multiple_regression(df):
     """Régression linéaire multiple : Montant_Credit = f(Revenu, Age, Anciennete)."""
     model, scaler, coeffs, r2, mae, mse, rmse = train_multiple_regression(df)
     
+    # CORRECTION : coeffs est déjà un dictionnaire correctement formaté
+    # On ne fait pas float() sur le dict entier, juste sur les valeurs
+    clean_coeffs = {}
+    for key, value in coeffs.items():
+        if isinstance(value, dict):
+            clean_coeffs[key] = {
+                'raw': float(value['raw']),
+                'standardized': float(value['standardized'])
+            }
+        else:
+            clean_coeffs[key] = float(value)
+    
     return {
-        'coefficients': {k: float(v) for k, v in coeffs.items()},
+        'coefficients': clean_coeffs,
         'r2': float(r2),
         'mae': float(mae),
         'mse': float(mse),
@@ -157,9 +175,25 @@ def get_logistic_regression(df):
     """Régression logistique pour prédire le défaut de paiement."""
     metrics, confusion, fpr, tpr, roc_auc = train_logistic_regression(df)
     
+    # CORRECTION : Conversion sécurisée des métriques avec gestion des NaN
+    clean_metrics = {}
+    for key, value in metrics.items():
+        try:
+            val = float(value)
+            # Remplacer NaN par 0.0 pour éviter les erreurs JSON
+            if np.isnan(val) or np.isinf(val):
+                val = 0.0
+            clean_metrics[key] = val
+        except (TypeError, ValueError):
+            clean_metrics[key] = 0.0
+    
     return {
-        'metrics': {k: float(v) for k, v in metrics.items()},
+        'metrics': clean_metrics,
         'confusion_matrix': confusion.tolist(),
-        'roc_curve': {'fpr': fpr.tolist(), 'tpr': tpr.tolist(), 'auc': float(roc_auc)},
+        'roc_curve': {
+            'fpr': fpr.tolist(),
+            'tpr': tpr.tolist(),
+            'auc': float(roc_auc) if not (np.isnan(roc_auc) or np.isinf(roc_auc)) else 0.0
+        },
         'interpretation': "La régression logistique est adaptée ici car la variable cible (Défaut) est binaire (0 ou 1). Une régression linéaire classique pourrait prédire des valeurs hors de l'intervalle [0, 1], ce qui n'a pas de sens pour une probabilité."
     }

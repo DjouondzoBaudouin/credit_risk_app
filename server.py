@@ -1,7 +1,6 @@
 """
 Serveur HTTP local minimaliste pour l'application d'analyse de risque de crédit.
 Utilise la bibliothèque standard http.server pour éviter les frameworks lourds.
-Gère les fichiers statiques et les requêtes API JSON/multipart.
 """
 import http.server
 import socketserver
@@ -9,10 +8,10 @@ import json
 import os
 import re
 import email
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 import sys
+import numpy as np
 
-# Ajout du chemin racine pour les imports backend
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from backend.data_manager import load_data, clean_data, map_columns, save_data, get_data_info
@@ -31,7 +30,6 @@ OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'output')
 class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
     
     def log_message(self, format, *args):
-        # Journalisation personnalisée pour l'interface
         print(f"[SERVER LOG] {args[0]}")
 
     def send_cors_headers(self):
@@ -48,46 +46,46 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
         parsed_path = urlparse(self.path)
         path = parsed_path.path
 
-        # Routes API GET
-        if path == '/api/data_info':
-            self.send_json_response(get_data_info())
-            return
+        try:
+            if path == '/api/data_info':
+                self.send_json_response(get_data_info())
+                return
 
-        # Servir les fichiers statiques
-        if path == '/':
-            path = '/index.html'
-        
-        file_path = os.path.normpath(os.path.join(FRONTEND_DIR, path.lstrip('/')))
-        
-        # Sécurité : empêcher l'accès en dehors du dossier frontend
-        if not file_path.startswith(FRONTEND_DIR):
-            self.send_error(403, "Accès interdit")
-            return
+            if path == '/':
+                path = '/index.html'
+            
+            file_path = os.path.normpath(os.path.join(FRONTEND_DIR, path.lstrip('/')))
+            
+            if not file_path.startswith(FRONTEND_DIR):
+                self.send_error(403, "Accès interdit")
+                return
 
-        if os.path.isfile(file_path):
-            self.send_response(200)
-            ext = os.path.splitext(file_path)[1].lower()
-            content_types = {
-                '.html': 'text/html',
-                '.css': 'text/css',
-                '.js': 'application/javascript',
-                '.json': 'application/json',
-                '.csv': 'text/csv',
-                '.png': 'image/png',
-                '.jpg': 'image/jpeg'
-            }
-            self.send_header('Content-Type', content_types.get(ext, 'application/octet-stream'))
-            self.send_cors_headers()
-            self.end_headers()
-            with open(file_path, 'rb') as f:
-                self.wfile.write(f.read())
-        else:
-            self.send_error(404, "Fichier non trouvé")
+            if os.path.isfile(file_path):
+                self.send_response(200)
+                ext = os.path.splitext(file_path)[1].lower()
+                content_types = {
+                    '.html': 'text/html',
+                    '.css': 'text/css',
+                    '.js': 'application/javascript',
+                    '.json': 'application/json',
+                    '.csv': 'text/csv',
+                    '.png': 'image/png',
+                    '.jpg': 'image/jpeg'
+                }
+                self.send_header('Content-Type', content_types.get(ext, 'application/octet-stream'))
+                self.send_cors_headers()
+                self.end_headers()
+                with open(file_path, 'rb') as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_error(404, "Fichier non trouvé")
+        except Exception as e:
+            print(f"[ERROR GET] {e}")
+            self.send_json_response({'error': str(e)}, 500)
 
     def do_POST(self):
         parsed_path = urlparse(self.path)
         path = parsed_path.path
-
         content_length = int(self.headers.get('Content-Length', 0))
         content_type = self.headers.get('Content-Type', '')
 
@@ -103,6 +101,9 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             else:
                 self.send_error(404, "Endpoint non trouvé")
         except Exception as e:
+            print(f"[ERROR POST] {e}")
+            import traceback
+            traceback.print_exc()
             self.send_json_response({'error': str(e)}, 500)
 
     def handle_upload(self, content_length, content_type):
@@ -127,17 +128,14 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json_response({'error': 'Aucun fichier trouvé'}, 400)
                 return
 
-            # Sauvegarde temporaire
             filepath = os.path.join(DATA_DIR, 'uploaded_data.csv')
             with open(filepath, 'wb') as f:
                 f.write(file_data['content'])
             
-            # Chargement et nettoyage
             df = load_data(filepath)
             df = map_columns(df)
             df = clean_data(df)
             
-            # Sauvegarde propre
             clean_path = os.path.join(DATA_DIR, 'credit_bancaire.csv')
             save_data(df, clean_path)
             
@@ -174,8 +172,6 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             result = get_multiple_regression(df)
         elif task == 'logistic':
             result = get_logistic_regression(df)
-        elif task == 'dashboard':
-            result = get_descriptive_stats(df) # Simplifié pour le dashboard, peut être étendu
         else:
             self.send_json_response({'error': 'Tâche inconnue'}, 400)
             return
@@ -197,11 +193,30 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
         })
 
     def send_json_response(self, data, status=200):
+        """Envoie une réponse JSON avec gestion des NaN et Infinity."""
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_cors_headers()
         self.end_headers()
-        self.wfile.write(json.dumps(data, default=str).encode('utf-8'))
+        
+        # Fonction de nettoyage pour convertir NaN/Infinity en None (null en JSON)
+        def clean_for_json(obj):
+            if isinstance(obj, dict):
+                return {k: clean_for_json(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [clean_for_json(v) for v in obj]
+            elif isinstance(obj, (float, np.floating)):
+                if np.isnan(obj) or np.isinf(obj):
+                    return None
+                return float(obj)
+            elif isinstance(obj, (int, np.integer)):
+                return int(obj)
+            elif isinstance(obj, np.ndarray):
+                return clean_for_json(obj.tolist())
+            return obj
+        
+        cleaned_data = clean_for_json(data)
+        self.wfile.write(json.dumps(cleaned_data, default=str).encode('utf-8'))
 
 if __name__ == '__main__':
     os.makedirs(DATA_DIR, exist_ok=True)

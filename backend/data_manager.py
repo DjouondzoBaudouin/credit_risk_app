@@ -12,7 +12,6 @@ def load_data(filepath):
         encodings = ['utf-8', 'latin-1', 'cp1252']
         for enc in encodings:
             try:
-                # Détection automatique du séparateur
                 df = pd.read_csv(filepath, encoding=enc, sep=None, engine='python')
                 return df
             except UnicodeDecodeError:
@@ -25,7 +24,6 @@ def load_data(filepath):
 
 def map_columns(df):
     """Normalise les noms de colonnes selon la configuration."""
-    # Nettoyer les noms : minuscules, sans accents, sans espaces
     df.columns = df.columns.str.lower().str.normalize('NFKD').str.encode('ascii', errors='ignore').str.decode('utf-8').str.replace(' ', '_')
     
     rename_dict = {}
@@ -40,28 +38,23 @@ def map_columns(df):
 
 def clean_data(df):
     """Nettoie les données : conversion numérique, gestion des manquants, suppression des doublons."""
-    # Colonnes numériques à convertir
     numeric_cols = ['Age', 'Revenu_Mensuel', 'Anciennete_Emploi', 'Montant_Credit', 
                     'Duree_Credit', 'Taux_Interet', 'Mensualite', 'Nombre_Retards', 
                     'Incident_Paiement', 'Nombre_Demandes']
     
     for col in numeric_cols:
         if col in df.columns:
-            # Supprimer les caractères non numériques (espaces, FCFA, virgules)
             df[col] = df[col].astype(str).str.replace(r'[^\d.]', '', regex=True)
             df[col] = pd.to_numeric(df[col], errors='coerce')
             
-    # Conversion des booléens/catégories
     if 'Defaut' in df.columns:
         df['Defaut'] = pd.to_numeric(df['Defaut'], errors='coerce').fillna(0).astype(int)
     if 'Sexe' in df.columns:
         df['Sexe'] = df['Sexe'].astype(str).str.strip()
 
-    # Suppression des doublons
     initial_len = len(df)
     df = df.drop_duplicates()
     
-    # Imputation simple des manquants pour les numériques (médiane)
     for col in numeric_cols:
         if col in df.columns:
             median_val = df[col].median()
